@@ -19,7 +19,8 @@
   button{padding:12px 18px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
   button:disabled{opacity:.4}
   .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
-  header{display:flex;justify-content:space-between;padding:8px 12px;font-size:14px;color:var(--mut)}
+  header{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 12px;font-size:14px;color:var(--mut)}
+  header button{padding:6px 12px}
   #stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:var(--card);touch-action:pan-y}
   #stage img{max-width:100%;max-height:100%;object-fit:contain}
   #url{padding:4px 12px;font-size:11px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -37,11 +38,18 @@
   <p>Load one or more .txt files of image URLs (one per line).</p>
   <input type="file" id="files" accept=".txt,text/plain" multiple>
   <p id="info"></p>
+  <div class="row">
+    <label>Skip images smaller than <input type="number" id="min" value="400" min="0" style="width:80px"> px (longest side)</label>
+  </div>
   <button id="start" disabled>Start</button>
 </div></section>
 
 <section id="review" hidden>
-  <header><span id="count"></span><span id="savedCount"></span></header>
+  <header>
+    <span id="count"></span>
+    <span id="savedCount"></span>
+    <button id="finish">Save…</button>
+  </header>
   <div id="stage"><img id="img" referrerpolicy="no-referrer" alt="Failed to load"></div>
   <div id="url"></div>
   <div id="bar">
@@ -52,7 +60,7 @@
 </section>
 
 <section id="done" hidden><div class="pad">
-  <h1>Finished</h1>
+  <h1>Download</h1>
   <p id="summary"></p>
   <div class="row">
     <label>Max images per zip <input type="number" id="per" value="100" min="1" style="width:80px"></label>
@@ -60,14 +68,16 @@
   <div class="row">
     <button id="zip">Download ZIP</button>
     <button id="txt">Download saved URLs (.txt)</button>
-    <button id="back">Back</button>
+    <button id="back">Continue reviewing</button>
   </div>
   <div id="status"></div>
 </div></section>
 
 <script>
 const $ = id => document.getElementById(id);
-let urls = [], i = 0, saved = [], hist = [];
+let urls = [], i = 0, saved = [], hist = [], skipped = 0;
+const zipped = new Set();
+let part = 1;
 
 function show(name){
   for (const s of ['setup','review','done']) $(s).hidden = s !== name;
@@ -84,45 +94,73 @@ $('files').addEventListener('change', async e => {
   $('start').disabled = !urls.length;
 });
 
-$('start').onclick = () => { i = 0; saved = []; hist = []; show('review'); render(); };
+$('start').onclick = () => {
+  i = 0; saved = []; hist = []; skipped = 0; zipped.clear(); part = 1;
+  render();
+};
 
 function render(){
-  if (i >= urls.length) {
-    $('summary').textContent = `Reviewed ${urls.length}, saved ${saved.length}.`;
-    $('zip').disabled = $('txt').disabled = !saved.length;
-    show('done');
-    return;
-  }
+  if (i >= urls.length) { showDone(); return; }
   show('review');
+  const my = i, img = $('img');
   $('count').textContent = `${i + 1} / ${urls.length}`;
-  $('savedCount').textContent = `Saved: ${saved.length}`;
-  $('img').src = urls[i];
+  $('savedCount').textContent = `Saved: ${saved.length} · Small skipped: ${skipped}`;
   $('url').textContent = urls[i];
+  img.style.visibility = 'hidden';
+  img.onload = () => {
+    if (my !== i) return;
+    const m = parseInt($('min').value) || 0;
+    if (Math.max(img.naturalWidth, img.naturalHeight) < m) autoSkip();
+    else img.style.visibility = 'visible';
+  };
+  img.onerror = () => { if (my === i) img.style.visibility = 'visible'; };
+  img.src = urls[i];
   for (let k = 1; k <= 2; k++) {
     if (urls[i + k]) { const p = new Image(); p.referrerPolicy = 'no-referrer'; p.src = urls[i + k]; }
   }
 }
 
+function autoSkip(){ hist.push('auto'); skipped++; i++; render(); }
+
 function decide(isSave){
-  if (i >= urls.length) return;
-  hist.push(isSave);
+  if (i >= urls.length || $('review').hidden) return;
+  hist.push(isSave ? 'save' : 'pass');
   if (isSave) saved.push(urls[i]);
   i++;
   render();
 }
+
 function undo(){
-  if (!i) return;
-  i--;
-  if (hist.pop()) saved.pop();
+  while (i > 0) {
+    i--;
+    const h = hist.pop();
+    if (h === 'save') saved.pop();
+    if (h === 'auto') { skipped--; continue; }
+    break;
+  }
   render();
 }
+
 $('save').onclick = () => decide(true);
 $('pass').onclick = () => decide(false);
 $('undo').onclick = undo;
-$('back').onclick = undo;
+$('finish').onclick = showDone;
+$('back').onclick = () => (i >= urls.length ? undo() : render());
+
+function pending(){ return saved.filter(u => !zipped.has(u)); }
+
+function showDone(){
+  const finished = i >= urls.length;
+  $('summary').textContent =
+    `Reviewed ${i} of ${urls.length}. Saved ${saved.length} (${pending().length} not yet zipped). Small images skipped: ${skipped}.`;
+  $('back').textContent = finished ? 'Undo last' : 'Continue reviewing';
+  $('zip').disabled = !pending().length;
+  $('txt').disabled = !saved.length;
+  show('done');
+}
 
 document.addEventListener('keydown', e => {
-  if ($('review').hidden) return;
+  if ($('review').hidden || e.target.tagName === 'INPUT') return;
   if (e.key === 'ArrowRight' || e.key === 's') decide(true);
   else if (e.key === 'ArrowLeft' || e.key === 'p') decide(false);
   else if (e.key === 'z' || e.key === 'Backspace') undo();
@@ -166,35 +204,38 @@ function fileName(u, k, type){
 
 $('zip').onclick = async () => {
   const per = Math.max(1, parseInt($('per').value) || 100);
+  const todo = saved.map((u, k) => [u, k]).filter(([u]) => !zipped.has(u));
   const failed = [];
-  let part = 1, zip = new JSZip(), n = 0;
+  let zip = new JSZip(), batch = [];
   $('zip').disabled = true;
 
   const flush = async () => {
-    if (!n) return;
+    if (!batch.length) return;
     $('status').textContent = `Building zip ${part}…`;
     const blob = await zip.generateAsync({type:'blob', compression:'STORE'});
     download(blob, `selected_${String(part).padStart(2, '0')}.zip`);
-    part++; zip = new JSZip(); n = 0;
+    batch.forEach(u => zipped.add(u));
+    part++; zip = new JSZip(); batch = [];
   };
 
-  for (let k = 0; k < saved.length; k++) {
-    $('status').textContent = `Fetching ${k + 1} / ${saved.length}\nFailed so far: ${failed.length}`;
+  for (let n = 0; n < todo.length; n++) {
+    const [u, k] = todo[n];
+    $('status').textContent = `Fetching ${n + 1} / ${todo.length}\nFailed so far: ${failed.length}`;
     try {
-      const r = await fetch(saved[k], {referrerPolicy:'no-referrer'});
+      const r = await fetch(u, {referrerPolicy:'no-referrer'});
       if (!r.ok) throw new Error(r.status);
       const b = await r.blob();
-      zip.file(fileName(saved[k], k, b.type), b);
-      n++;
-      if (n >= per) await flush();
-    } catch (e) { failed.push(saved[k]); }
+      zip.file(fileName(u, k, b.type), b);
+      batch.push(u);
+      if (batch.length >= per) await flush();
+    } catch (e) { failed.push(u); }
   }
   await flush();
 
   if (failed.length) download(new Blob([failed.join('\n')], {type:'text/plain'}), 'failed_urls.txt');
-  $('status').textContent = `Done. ${saved.length - failed.length} added to zip(s), ${failed.length} failed.` +
+  showDone();
+  $('status').textContent = `Done. ${todo.length - failed.length} added to zip(s), ${failed.length} failed.` +
     (failed.length ? '\nFailed URLs were saved as failed_urls.txt (likely blocked by the image host\'s CORS policy).' : '');
-  $('zip').disabled = false;
 };
 </script>
 </body>
